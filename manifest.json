@@ -1,0 +1,7 @@
+{
+  "name": "YY Figma Assistant — Implement",
+  "id": "yyfa-changes",
+  "api": "1.0.0",
+  "editorType": ["figma"],
+  "main": "main-implement.js"
+}
