@@ -1,673 +1,681 @@
-// main-implement.js
+// ---------------------------------------------------------------------------
+// Logging Utilities
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Debug-enabled Main Implement (Universal Plugin with Collapsible Debug)
+// ---------------------------------------------------------------------------
 
-const uiLog = (text: string) => { try { figma.ui.postMessage({ type: "log", text }); } catch (_) { /* ignored */ } };
-const log = (...a) => { console.log("[YY-MakeChanges]", ...a); uiLog(a.map(String).join(" ")); };
-const ok = (m) => { figma.notify(`✅ ${m}`); uiLog(`✅ ${m}`); };
-const err = (m) => { figma.notify(`⚠️ ${m}`); uiLog(`⚠️ ${m}`); };
-const warn = msg => console.warn(`⚠️ ${msg}`);
+// ---------------------------------------------------------------------------
+// Debug and Logging (UI + Console Unified)
+// ---------------------------------------------------------------------------
 
-// ------------- Show UI -------------
+const uiLog = (text: string) => {
+    try {
+        figma.ui.postMessage({ type: "log", text });
+    } catch (_) {
+        console.log("UI log fallback:", text);
+    }
+};
+const log = (...a: any[]) => {
+    console.log("[YY-Retie]", ...a);
+    try { figma.ui.postMessage({ type: "log", text: a.map(String).join(" ") }); }
+    catch (_) {}
+};
+const dbg = (...args) => {
+    const msg = args.map(a => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
+    console.log("🐞 [DEBUG]", msg);
+    uiLog(msg);
+};
+const warn = (...args) => {
+    const msg = args.map(a => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
+    console.warn("⚠️ [WARN]", msg);
+    uiLog(`⚠️ ${msg}`);
+};
+const ok = (...args) => {
+    const msg = args.map(a => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
+    figma.notify(`✅ ${msg}`);
+    console.log("✅ [OK]", msg);
+    uiLog(`✅ ${msg}`);
+};
+
+
+let defaultParent: BaseNode | null = null;
+
+// ---------------------------------------------------------------------------
+// Insert Path Helper
+// ---------------------------------------------------------------------------
+async function insertPath(pathString: string): Promise<FrameNode | null> {
+    const segments = pathString.split("/").map(s => s.trim()).filter(Boolean);
+    let parent: FrameNode | PageNode = figma.currentPage;
+
+    for (const segment of segments) {
+        let existing = parent.findOne(n => n.name === segment && "children" in n) as FrameNode | null;
+        if (!existing) {
+            const frame = figma.createFrame();
+            frame.name = segment;
+            parent.appendChild(frame);
+            dbg(`📦 Created new frame in path: ${segment}`);
+            parent = frame;
+        } else {
+            parent = existing;
+            dbg(`↪ Found existing path segment: ${segment}`);
+        }
+    }
+
+    return parent as FrameNode;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: Hex → RGB(A)
+// ---------------------------------------------------------------------------
+function hexToRgb01(hex: string) {
+    let c = hex.replace('#', '').trim();
+    if (c.length === 3) c = c.split('').map(x => x + x).join('');
+    const num = parseInt(c.substring(0, 6), 16);
+    const r = ((num >> 16) & 255) / 255;
+    const g = ((num >> 8) & 255) / 255;
+    const b = (num & 255) / 255;
+    let a = 1;
+    if (c.length === 8) a = parseInt(c.substring(6, 8), 16) / 255;
+    return { r, g, b, a };
+}
+
+// ---------------------------------------------------------------------------
+// Helper: Safe Font Loader
+// ---------------------------------------------------------------------------
+async function safeLoadFont(font: FontName | null) {
+    try {
+        if (!font) font = { family: 'Inter', style: 'Regular' };
+        await figma.loadFontAsync(font);
+        dbg('Loaded font', font);
+        return font;
+    } catch (e) {
+        warn(`Primary font load failed: ${e}. Falling back to Inter Regular.`);
+        const fallback = { family: 'Inter', style: 'Regular' };
+        try {
+            await figma.loadFontAsync(fallback);
+            dbg('Loaded fallback font');
+            return fallback;
+        } catch (fallbackError) {
+            err(`Fallback font load failed: ${fallbackError}`);
+            return null;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Universal Helper: Apply Hex to Any Node or Children
+// ---------------------------------------------------------------------------
+function applyHexColorUniversal(node: SceneNode, hex: string) {
+    try {
+        if (!hex) return;
+        const { r, g, b, a } = hexToRgb01(hex);
+        dbg(`Applying ${hex} to node:`, node.name);
+
+        if ('fills' in node && node.type !== 'TEXT') {
+            (node as GeometryMixin).fills = [{ type: 'SOLID', color: { r, g, b }, opacity: a }];
+        }
+
+        if ('children' in node) {
+            for (const child of node.children) {
+                if (child.name.toLowerCase().includes('colorbox') || /[0-9]{2,3}/.test(child.name)) {
+                    applyHexColorUniversal(child, hex);
+                }
+            }
+        }
+    } catch (error) {
+        err(`Failed to apply hex ${hex} on ${node.name}: ${String(error)}`);
+    }
+}
+function hexToRgb01(hex: string) {
+    const clean = hex.replace(/^#/, "");
+    const num = parseInt(clean, 16);
+    const r = ((num >> 16) & 255) / 255;
+    const g = ((num >> 8) & 255) / 255;
+    const b = (num & 255) / 255;
+    return { r, g, b, a: 1 };
+}
+
+// ---------------------------------------------------------------------------
+// Universal JSON Handler (with Debug Logs)
+// ---------------------------------------------------------------------------
+async function handleUniversalJSON(spec: any) {
+    try {
+        if (spec?.meta?.insertPath) {
+            const targetParent = await insertPath(spec.meta.insertPath);
+            if (targetParent) {
+                dbg(`✅ Insert path resolved: ${spec.meta.insertPath}`);
+                // Set this as the default parent for new nodes
+                defaultParent = targetParent;
+            }
+        }
+        if (spec?.variables?.collections) {
+            try {
+                const collections = await figma.variables.getLocalVariableCollectionsAsync();
+                const vars = await figma.variables.getLocalVariablesAsync();
+
+                for (const collSpec of spec.variables.collections) {
+                    // find or create collection
+                    let coll = collections.find(c => c.name === collSpec.name);
+                    if (!coll) {
+                        coll = figma.variables.createVariableCollection(collSpec.name);
+                        log(`🆕 Created collection: ${collSpec.name}`);
+                    }
+
+                    // ensure modes
+                    const existingModeNames = new Set(coll.modes.map(m => m.name));
+                    for (const modeSpec of collSpec.modes || [{ name: "Value" }]) {
+                        if (!existingModeNames.has(modeSpec.name)) {
+                            coll.addMode(modeSpec.name);
+                            log(`➕ Added mode: ${modeSpec.name}`);
+                        }
+                    }
+
+                    // create or update variables
+                    for (const vSpec of collSpec.variables || []) {
+                        let v = vars.find(x => x.name === vSpec.name && x.variableCollectionId === coll.id);
+                        if (!v) {
+                            v = figma.variables.createVariable(vSpec.name, coll.id, vSpec.type);
+                            log(`🎨 Created variable: ${vSpec.name}`);
+                        }
+
+                        for (const [modeKey, val] of Object.entries(vSpec.valuesByMode || {})) {
+                            const mode = coll.modes.find(m => m.name === modeKey || m.modeId === modeKey);
+                            if (!mode) continue;
+
+                            if (vSpec.type === "COLOR") {
+                                const color = typeof val === "string" ? hexToRgb01(val) : val;
+                                v.setValueForMode(mode.modeId, color);
+                            } else if (vSpec.type === "FLOAT") {
+                                v.setValueForMode(mode.modeId, Number(val));
+                            } else if (vSpec.type === "STRING") {
+                                v.setValueForMode(mode.modeId, String(val));
+                            }
+                        }
+                    }
+                }
+
+                ok("✅ Variable collections applied successfully.");
+            } catch (e) {
+                warn(`⚠️ Failed to apply variables: ${e}`);
+            }
+        }
+        if (!spec?.nodes || spec.nodes.length === 0) {
+            warn("⚠️ No nodes found in JSON.");
+            return;
+        }
+
+        for (const nodeDef of spec.nodes) {
+            if (nodeDef.type === "INSTANCE") {
+                const instance = await findOrCreateInstance(nodeDef);
+                if (instance) await updateInstance(instance, nodeDef);
+            } else {
+                await buildNode(nodeDef);
+            }
+        }
+
+        ok("✅ JSON applied successfully.");
+    } catch (e) {
+        warn(`❌ Failed to apply JSON: ${e}`);
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// UI + Message Routing (Collapsible Debug)
+// ---------------------------------------------------------------------------
 
 figma.showUI(
     `<html><body style="margin:8px;font:12px ui-monospace,monospace">
-    <div id=out style="white-space:pre;max-width:460px;margin-bottom:6px"></div>
-    <label for=txt style="display:block;margin-bottom:4px;font-weight:600;">Insert JSON:</label>
-    <textarea id=txt rows=8 placeholder='{"meta": {...}, "variables": {...}, "nodes": [...] }'
-      style="width:460px;max-width:460px;font:12px ui-monospace,monospace;white-space:pre"></textarea><br/>
-    <div style="margin-top:6px;display:flex;gap:6px">
-      <button id=apply>Apply JSON</button>
-      <button id=retie>Re-tie page to variables</button>
-    </div>
-
-    <script>
-      const out = document.getElementById('out');
-      const txt = document.getElementById('txt');
-      const btnApply = document.getElementById('apply');
-      const btnRetie = document.getElementById('retie');
-      const log = (m) => out.textContent += (m + "\\n");
-      window.onmessage = (e) => { const m = e.data.pluginMessage; if (m && m.type === 'log') log(m.text); };
-
-      btnApply.onclick = () => parent.postMessage({ pluginMessage:{ type:'apply-json', text: txt.value } }, '*');
-      btnRetie.onclick  = () => parent.postMessage({ pluginMessage:{ type:'retie' } }, '*');
-    </script>
-  </body></html>`,
-    { width: 500, height: 360 }
+  <details id="debugWrap" open><summary style="cursor:pointer;font-weight:bold">Debug Output</summary>
+    <div id=out style="white-space:pre;max-width:460px;margin-bottom:6px;height:160px;overflow:auto;border:1px solid #ddd;padding:4px"></div>
+  </details>
+  <label for=txt style="display:block;margin-top:8px;margin-bottom:4px;font-weight:600;">Insert JSON:</label>
+  <textarea id=txt rows=10 placeholder='Insert JSON here' style="width:460px;max-width:460px;font:12px ui-monospace,monospace;white-space:pre"></textarea><br/>
+  <div style="margin-top:6px;display:flex;gap:6px">
+    <button id=apply>Apply JSON</button>
+    <button id=retie>Re-tie page to variables</button>
+    <button id=debug>Toggle Debug</button>
+  </div>
+  <script>
+    const out = document.getElementById('out');
+    const txt = document.getElementById('txt');
+    const log = (m) => { out.textContent += (m + "\\n"); out.scrollTop = out.scrollHeight; };
+    window.onmessage = (e) => { const m = e.data.pluginMessage; if (m && m.type === 'log') log(m.text); };
+    document.getElementById('apply').onclick = () => parent.postMessage({ pluginMessage:{ type:'apply-json', text: txt.value } }, '*');
+    document.getElementById('retie').onclick  = () => parent.postMessage({ pluginMessage:{ type:'retie' } }, '*');
+    document.getElementById('debug').onclick  = () => parent.postMessage({ pluginMessage:{ type:'toggle-debug' } }, '*');
+  </script>
+</body></html>`,
+    { width: 540, height: 500 }
 );
 
-// -------------------- Communications --------------------
 figma.ui.onmessage = async (msg) => {
-    if (msg?.type === "retie") {
-        await retiePageToVariables();
-        return;
+    if (msg.type === "apply-json") {
+        let data;
+        try {
+            data = JSON.parse(msg.text);
+        } catch (e) {
+            warn("Invalid JSON format.");
+            return;
+        }
+        await handleUniversalJSON(data);
     }
-    if (msg?.type !== "apply-json") return;
 
-    try {
-        const raw = msg.text;
-        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-        const jsonfile = parseLoadedFile(parsed);
-
-        applyMeta(jsonfile.meta);
-        await applyVariables(jsonfile.variables);
-        await applyNodes(jsonfile.nodes);
-
-        ok("Changes applied");
-    } catch (e) {
-        err("apply-json failed: " + String((e as any)?.message ?? e));
+    if (msg.type === "retie") {
+        await retiePageToVariables();
     }
 };
 
 
-// -------------------- Pipeline --------------------
+    // ---------------------------------------------------------------------------
+    // VARIABLE COLLECTION HANDLER (with integrated mode detection)
+    // ---------------------------------------------------------------------------
 
-    async function applyJSONFile(jsonfile: { schema:any; meta:any; variables:any; nodes:any; }) {
-        applyMeta(jsonfile.meta);
-        await applyVariables(jsonfile.variables, jsonfile.meta?.renameCollections); // ← pass map
-        await applyNodes(jsonfile.nodes);
-    }
-
-
-// -------------------- Parsing / Normalization --------------------
-
-    function parseLoadedFile(obj: any) {
-        if (!obj || typeof obj !== "object") throw new Error("JSON must be an object");
-        return {
-            schema: obj["$schema"] || null,
-            meta: obj.meta || {},
-            variables: obj.variables || { collectionsCount: 0, collections: [] },
-            nodes: obj.nodes || null
-        };
-    }
-
-        // -------------------- Meta --------------------
-
-        function applyMeta(meta: any = {}) {
-            try {
-                // store what we can at document scope
-                if (meta.fileName) figma.root.setPluginData("yy_desiredFileName", String(meta.fileName)); // cannot actually rename file
-                if (meta.scanId)   figma.root.setPluginData("yy_scanId",       String(meta.scanId));
-                if (meta.pageName) figma.root.setPluginData("yy_pageName",     String(meta.pageName));
-                if (meta.author)   figma.root.setPluginData("yy_author",       String(meta.author));
-                if (meta.version)  figma.root.setPluginData("yy_version",      String(meta.version));
-
-                // optional shared plugin data (namespaced) for team-wide visibility
-                try {
-                    const NS = "yy";
-                    Object.entries(meta).forEach(([k,v]) => { if (v != null) figma.root.setSharedPluginData(NS, k, String(v)); });
-                } catch {}
-
-                const desired = figma.root.getPluginData("yy_desiredFileName");
-                if (desired) ok(`Please rename this file to: ${desired} (plugins can’t rename files)`);
-                log("Meta saved: " + JSON.stringify({ fileName: meta.fileName, scanId: meta.scanId, pageName: meta.pageName, author: meta.author, version: meta.version }));
-            } catch (e) { err("applyMeta: " + String(e)); }
-        }
-
-        // -------------------- Variables (collections only, correct API) --------------------
-        // Note: variable APIs differ between plugin runtime versions. We feature-detect and keep things safe.
-
-        async function applyVariables(variables: any = { collections: [] }) {
-            try {
-                if (!figma.variables) { log("Variable API unavailable"); return; }
-                const cols = Array.isArray(variables?.collections) ? variables.collections : [];
-                if (!cols.length) { log("No variable collections to apply"); return; }
-
-                const TYPE: Record<string, VariableResolvedDataType> = {
-                    COLOR: "COLOR", FLOAT: "FLOAT", STRING: "STRING", BOOLEAN: "BOOLEAN", NUMBER: "FLOAT"
-                };
-
-                const localCollections = await figma.variables.getLocalVariableCollectionsAsync();
-                const collectionByName = new Map(localCollections.map(c => [c.name, c]));
-
-                for (const c of cols) {
-                    const name = String(c?.name || "").trim();
-                    if (!name) { log("Skip unnamed collection"); continue; }
-
-                    // 1) ensure collection
-                    let collection = collectionByName.get(name);
-                    // Handle renames first
-                    if (!collection) {
-                        collection = figma.variables.createVariableCollection(name);
-                        collectionByName.set(name, collection);
-                        log(`Created collection: "${name}" (${collection.id})`);
-                    } else {
-                        log(`Collection exists: "${name}"`);
-                    }
-
-                    // 2) ensure modes (on the collection)
-                    const wantModes = (Array.isArray(c?.modes) ? c.modes : []).map((m:any)=>String(m?.name||"").trim()).filter(Boolean);
-                    if (wantModes.length) {
-                        // if collection has a single default mode, rename it to the first desired mode
-                        if (collection.modes.length === 1 && collection.modes[0].name !== wantModes[0]) {
-                            collection.renameMode(collection.modes[0].modeId, wantModes[0]);
-                            log(`  • renamed default mode → ${wantModes[0]}`);
-                        }
-                        // add any missing modes
-                        for (const m of wantModes) {
-                            if (!collection.modes.find(x => x.name === m)) {
-                                collection.addMode(m);
-                                log(`  • added mode: ${m}`);
-                            }
-                        }
-                    } else if (!collection.modes.length) {
-                        collection.addMode("Base");
-                    }
-
-                    // refresh mode map
-                    const modeIdByName = new Map(collection.modes.map(m => [m.name, m.modeId]));
-
-                    // 3) variables
-                    const wantVars = Array.isArray(c?.variables) ? c.variables : [];
-                    if (!wantVars.length) { log(`  (no variables in "${name}")`); continue; }
-
-                    const localVars = (await figma.variables.getLocalVariablesAsync())
-                        .filter(v => v.variableCollectionId === collection.id);
-                    const varByName = new Map(localVars.map(v => [v.name, v]));
-
-                    for (const v of wantVars) {
-                        const vName = String(v?.name || "").trim(); if (!vName) { log("  - skip unnamed variable"); continue; }
-                        const vType = TYPE[String(v?.type || "").toUpperCase()] ?? "STRING";
-                        const valuesByMode = (v?.valuesByMode && typeof v.valuesByMode === "object") ? v.valuesByMode : {};
-
-                        // create or recreate if type mismatch
-                        let variable = varByName.get(vName);
-                        if (!variable) {
-                            variable = figma.variables.createVariable(vName, collection.id, vType);
-                            varByName.set(vName, variable);
-                            log(`  + var: ${vName} (${vType})`);
-                        } else if (variable.resolvedType !== vType) {
-                            log(`  ! type mismatch for ${vName} (have ${variable.resolvedType}, want ${vType}) — recreating`);
-                            variable.remove();
-                            variable = figma.variables.createVariable(vName, collection.id, vType);
-                            varByName.set(vName, variable);
-                        } else {
-                            log(`  = var: ${vName}`);
-                        }
-
-                        // set values per mode
-                        for (const [modeName, raw] of Object.entries(valuesByMode)) {
-                            const modeId = modeIdByName.get(modeName);
-                            if (!modeId) { log(`    • mode "${modeName}" not found in "${name}"`); continue; }
-
-                            try {
-                                let val: any = raw;
-                                if (vType === "COLOR") {
-                                    const { r, g, b, a } = hexToRgb01(String(raw).trim());
-                                    val = { r, g, b, a }; // RGBA in 0–1 (what Variables expect)
-                                } else if (vType === "FLOAT") {
-                                    val = Number(raw);
-                                } else if (vType === "BOOLEAN") {
-                                    val = Boolean(raw);
-                                } else {
-                                    val = String(raw);
-                                }
-                                variable.setValueForMode(modeId, val);
-                                log(`    • set ${vName} @ ${modeName}`);
-                            } catch (e) {
-                                err(`    set ${vName} @ ${modeName}: ${String(e)}`);
-                            }
-                        }
+    function detectModeId(spec: any): string {
+        try {
+            const collections = spec.variables?.collections || [];
+            for (const col of collections) {
+                const modes = col.modes || [];
+                if (Array.isArray(modes) && modes.length) {
+                    const modeCandidate = modes[0].id || modes[0];
+                    if (typeof modeCandidate === 'string' && modeCandidate.includes(':')) {
+                        return modeCandidate;
                     }
                 }
+            }
+            for (const col of collections) {
+                for (const variable of col.variables || []) {
+                    const keys = Object.keys(variable.valuesByMode || {});
+                    if (keys.length) return keys[0];
+                }
+            }
+            if (spec.meta?.modeId) return spec.meta.modeId;
+        } catch (_) {}
+
+        const knownFallbacks = ['33:0', '386:0', '502:0', '530:0'];
+        for (const id of knownFallbacks) {
+            const exists = figma.variables.getLocalVariableCollections().some(c =>
+                c.modes.some(m => m.modeId === id)
+            );
+            if (exists) return id;
+        }
+
+        try {
+            const defaultCollection = figma.variables.getLocalVariableCollections()[0];
+            if (defaultCollection?.modes?.length) {
+                return defaultCollection.modes[0].modeId;
+            }
+        } catch (_) {}
+
+        return '33:0';
+    }
+
+    async function registerVariableCollection(collection: any, spec: any) {
+        const modeId = detectModeId(spec);
+        const colName = collection.name || 'Unnamed Collection';
+        const variables = collection.variables || [];
+        log(`🧭 Using mode ID: ${modeId} for collection: ${colName}`);
+
+        for (const variable of variables) {
+            const name = variable.name;
+            const type = variable.type || 'STRING';
+            const value = variable.valuesByMode?.[modeId];
+            if (!name) continue;
+
+            try {
+                let v = figma.variables.getLocalVariableById(variable.id);
+                if (!v) v = figma.variables.createVariable(name, modeId, type);
+                v.valuesByMode = { [modeId]: value };
             } catch (e) {
-                err("applyVariables: " + String(e));
+                warn(`Skipped variable "${name}": ${e}`);
+            }
+        }
+        log(`🎨 Registered variable collection: ${colName}`);
+    }
+
+
+    // ---------------------------------------------------------------------------
+    // NODE CREATION + UNIVERSAL UPDATE SYSTEM (Unified but Distinct for Instances)
+    // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Node Finder and Creator Helpers
+// ---------------------------------------------------------------------------
+function findNode(root: BaseNode & ChildrenMixin, target: string): SceneNode | null {
+    if (!root || !target) return null;
+    const lowerTarget = target.toLowerCase();
+    const node = root.findOne(
+        n => n.name.toLowerCase() === lowerTarget || n.name.toLowerCase().includes(lowerTarget)
+    ) as SceneNode | null;
+    if (node) dbg(`Found node for target '${target}':`, node.name);
+    else warn(`Could not find node for target: ${target}`);
+    return node;
+}
+
+function createNode(type: string): BaseNode {
+    switch (type) {
+        case 'FRAME':
+            return figma.createFrame();
+        case 'COMPONENT':
+            return figma.createComponent();
+        case 'INSTANCE': {
+            const master = figma.currentPage.findOne(
+                n => n.name === 'palette' && n.type === 'COMPONENT'
+            );
+            if (!master) throw new Error('Missing master component "palette".');
+            return (master as ComponentNode).createInstance();
+        }
+        case 'RECTANGLE':
+            return figma.createRectangle();
+        case 'TEXT':
+            return figma.createText();
+        default:
+            throw new Error(`Unsupported node type: ${type}`);
+    }
+}
+// ---------------------------------------------------------------------------
+// Find or Create Instance (Universal-Safe)
+// ---------------------------------------------------------------------------
+async function findOrCreateInstance(spec: any) {
+    if (!spec || !spec.name) {
+        warn("❌ Invalid instance spec — missing name");
+        return null;
+    }
+
+    let instance = figma.currentPage.findOne(
+        n => n.name === spec.name && n.type === "INSTANCE"
+    ) as InstanceNode | null;
+
+    if (!instance) {
+        const master = figma.currentPage.findOne(
+            n => n.name === spec.masterComponent && n.type === "COMPONENT"
+        ) as ComponentNode | null;
+
+        if (!master) {
+            warn(`⚠️ Master component not found: ${spec.masterComponent}`);
+            return null;
+        }
+
+        instance = master.createInstance();
+        instance.name = spec.name;
+        figma.currentPage.appendChild(instance);
+        dbg(`✅ Created instance from ${master.name} → ${instance.name}`);
+    } else {
+        dbg(`↪ Found existing instance: ${instance.name}`);
+    }
+
+    return instance;
+}
+    // ---------------------------------------------------------------------------
+    // Build Node (Structure creation only)
+    // ---------------------------------------------------------------------------
+    async function buildNode(nodeDef: any, parent?: BaseNode) {
+        const parentNode = parent || defaultParent || figma.currentPage;
+        const type = nodeDef.type;
+        const name = nodeDef.name || 'Unnamed Node';
+        let node = figma.currentPage.findOne(n => n.name === name && n.type === type);
+
+        (parentNode as ChildrenMixin).appendChild(node);
+
+        if (!node) {
+            node = createNode(type);
+            node.name = name;
+            (parent || figma.currentPage).appendChild(node);
+            dbg(`Created new ${type}: ${name}`);
+        }
+
+        // Apply geometry and layout only
+        if (nodeDef.size) node.resizeWithoutConstraints(nodeDef.size.w, nodeDef.size.h);
+        if (nodeDef.absPos) {
+            node.x = nodeDef.absPos.x;
+            node.y = nodeDef.absPos.y;
+        }
+        if (nodeDef.autoLayout && 'layoutMode' in node) {
+            const layout = nodeDef.autoLayout;
+            node.layoutMode = layout.mode || 'NONE';
+            if ('itemSpacing' in node && layout.gap != null) node.itemSpacing = layout.gap;
+        }
+
+        // Apply property definitions using the universal property walker
+        if (nodeDef.props) await applyProps(node, nodeDef.props);
+
+        // Recursively build child nodes
+        if (nodeDef.children && Array.isArray(nodeDef.children)) {
+            for (const child of nodeDef.children) {
+                await buildNode(child, node);
             }
         }
 
-        // helper
-        function hexToRgb01(hex: string){ const h=hex.replace("#","").trim();
-            let r=0,g=0,b=0,a=1; if(h.length===3){r=parseInt(h[0]+h[0],16);g=parseInt(h[1]+h[1],16);b=parseInt(h[2]+h[2],16);}
-            else if(h.length===6){r=parseInt(h.slice(0,2),16);g=parseInt(h.slice(2,4),16);b=parseInt(h.slice(4,6),16);}
-            else if(h.length===8){r=parseInt(h.slice(0,2),16);g=parseInt(h.slice(2,4),16);b=parseInt(h.slice(4,6),16);a=parseInt(h.slice(6,8),16)/255;}
-            return { r:r/255,g:g/255,b:b/255,a };
+        return node;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Property Walker — Generic Property Application (applies to all node types)
+    // ---------------------------------------------------------------------------
+    async function applyProps(node: SceneNode, props: Record<string, any>) {
+        for (const [path, value] of Object.entries(props)) {
+            const segments = path.split(".");
+            await applyPath(node, segments, value);
+        }
+    }
+
+    async function applyPath(target: SceneNode, segments: string[], value: any) {
+        if (!segments.length) return;
+        const [current, ...rest] = segments;
+
+        if (rest.length === 0) {
+            await applyProperty(target, current, value);
+            return;
         }
 
+        if ("findOne" in target) {
+            const child = target.findOne(
+                n => n.name.toLowerCase() === current.toLowerCase()
+            ) as SceneNode | null;
+            if (child) {
+                await applyPath(child, rest, value);
+            } else {
+                warn(`Missing child "${current}" under ${target.name}`);
+            }
+        }
+    }
 
 
-        // -------------------- Nodes --------------------
-        async function applyNodes(nodes: any) {
-            let updatedCount = 0;
-            if (!nodes) return log("No changes found");
-
-            const arr = Array.isArray(nodes) ? nodes : [nodes];
-            const nodeMap = new Map<string, SceneNode>();
-            const componentMap = new Map<string, ComponentNode>();
-
-            async function createNode(spec: any, parent?: BaseNode & ChildrenMixin): Promise<BaseNode | null> {
-                const t = (spec?.type || spec?.kind || "").toUpperCase();
-                // --- SAFETY: never edit component masters directly ---
-                if (spec.id) {
-                    const node = figma.getNodeById(spec.id);
-                    if (node && node.type === "COMPONENT" && !node.mainComponent) {
-                        log(`⛔ Skipping component master: ${node.name}`);
-                        return null;
+    // ---------------------------------------------------------------------------
+    // + Application Logic
+    // ---------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
+    // Property Application Logic (Final Working Version)
+    // ---------------------------------------------------------------------------
+    async function applyProperty(node: SceneNode, prop: string, value: any) {
+        switch (prop) {
+            case 'fills.color': {
+                const { r, g, b, a } = hexToRgb01(value);
+                if ('fills' in node && Array.isArray(node.fills)) {
+                    try {
+                        node.fills = [{ type: 'SOLID', color: { r, g, b }, opacity: a }];
+                        dbg(`🎨 Applied color ${value} to ${node.name}`);
+                    } catch (e) {
+                        warn(`❌ Failed to apply color ${value} on ${node.name}: ${e}`);
                     }
-                    }
+                } else {
+                    warn(`⚠️ Node ${node.name} has no fills property.`);
+                }
+                break;
+            }
 
-                let node: SceneNode | null = null;
 
+            case 'characters': {
                 try {
-                    switch (t) {
-
-                        // ──────────────────────────── FRAME UPDATE ────────────────────────────
-                        case "FRAME":
-                        case "FRAME-SNAPSHOT": {
-                            const id = spec?.id;
-                            if (!id) { log("frame-snapshot missing id"); break; }
-
-                            const existing = figma.getNodeById(id);
-                            if (existing.type !== "FRAME" && existing.type !== "INSTANCE") {
-                                log(`Node ${id} not a FRAME or INSTANCE — skipped`);
-                                break;
-                            }
-
-                            const f = existing as FrameNode;
-                            const p = spec.absPos, s = spec.size;
-
-                            if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
-                                f.x = p.x; f.y = p.y;
-                                log(`pos → ${p.x},${p.y}`);
-                            }
-                            if (s && Number.isFinite(s.w) && Number.isFinite(s.h)) {
-                                f.resize(s.w, s.h);
-                                log(`size → ${s.w}×${s.h}`);
-                            }
-                            ok(`Frame updated: ${f.name}`);
-
-                            if (Array.isArray(spec.children)) {
-                                for (const child of spec.children) {
-                                    await createNode(child, f);
-                                }
-                            }
-                            break;
-                        }
-
-                        // ──────────────────────────── INSTANCE UPDATE ────────────────────────────
-                        // -------------------- Instance Update (for swatch palettes) --------------------
-                        case "INSTANCE-UPDATE": {
-                            const name = String(spec?.name || "").trim();
-                            if (!name) { log("Instance-update missing name"); break; }
-
-                            // Find the instance node by name
-                            const inst = figma.currentPage.findOne(
-                                n => n.name === name && (n.type === "INSTANCE" || n.type === "FRAME")
-                            ) as InstanceNode | FrameNode | null;
-
-                            if (!inst) { warn(`Instance "${name}" not found`); break; }
-
-                            // --- Skip master components to avoid overwriting them ---
-                            if (inst.type === "COMPONENT") {
-                                log(`⏭️ Skipping master component: ${name}`);
-                                break;
-                            }
-
-                            // --- Update the color rectangle fill ---
-                            let colorRect: RectangleNode | null = null;
-                            try {
-                                colorRect = inst.findOne(n => n.name === "ColorBox") as RectangleNode | null;
-                                if (colorRect) {
-                                    // Apply solid color if Hex provided
-                                    if (spec.Hex) {
-                                        const { r, g, b, a } = hexToRgb01(spec.Hex);
-                                        colorRect.fills = [{ type: "SOLID", color: { r, g, b }, opacity: a }];
-                                        log(`🎨 Updated fill color for ${name}`);
-                                    }
-
-                                    // --- Bind Variable if specified ---
-                                    if (spec.variableAlias && colorRect) {
-                                        try {
-                                            const variable = figma.variables.getVariableById(spec.variableAlias);
-                                            if (variable) {
-                                                if (!colorRect.fills || colorRect.fills.length === 0) {
-                                                    colorRect.fills = [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }];
-                                                }
-                                                colorRect.boundVariables = {
-                                                    fills: { id: variable.id, type: "VARIABLE_ALIAS" }
-                                                };
-                                                log(`✅ Bound ${name} to variable: ${variable.name}`);
-                                            } else {
-                                                warn(`⚠️ Variable not found: ${spec.variableAlias}`);
-                                            }
-                                        } catch (e) {
-                                            err(`Failed to bind variable for ${name}: ${String(e)}`);
-                                        }
-                                    }
-                                }
-                            } catch (e) {
-                                err(`Failed to recolor ${name}: ${String(e)}`);
-                            }
-
-                            // --- Update text layers (Label + Hex) ---
-                            try {
-                                const label = inst.findOne(n => n.name === "Label") as TextNode | null;
-                                if (label && spec.Label) {
-                                    await figma.loadFontAsync(label.fontName as FontName);
-                                    label.characters = spec.Label;
-                                }
-
-                                const hexText = inst.findOne(n => n.name === "Hex") as TextNode | null;
-                                if (hexText && spec.Hex) {
-                                    await figma.loadFontAsync(hexText.fontName as FontName);
-                                    hexText.characters = spec.Hex;
-                                }
-
-                                log(`📝 Updated text for ${name}`);
-                            } catch (e) {
-                                warn(`⚠️ Text update failed in ${name}: ${String(e)}`);
-                            }
-
-                            updatedCount++;
-                            break;
-                        } // ✅ properly closes INSTANCE-UPDATE
-
-
-
-                        // ──────────────────────────── INSTANCE CREATION ────────────────────────────
-                        case "INSTANCE": {
-                            try {
-                                const componentId = String(spec?.componentId || "").trim();
-                                if (!componentId) { log("Instance missing componentId"); break; }
-
-                                // Find the component in the document
-                                const comp = figma.getNodeById(componentId) as ComponentNode | null;
-                                if (!comp) { log(`Component not found for id: ${componentId}`); break; }
-
-                                // Create the instance
-                                const inst = comp.createInstance();
-                                if (spec.name) inst.name = spec.name;
-
-                                // Optional positioning
-                                if (spec.absPos) { inst.x = spec.absPos.x || 0; inst.y = spec.absPos.y || 0; }
-                                if (spec.size) inst.resize(spec.size.w || inst.width, spec.size.h || inst.height);
-
-                                // Optional auto layout configuration
-                                if (spec.autoLayout) {
-                                    const f = inst as FrameNode;
-                                    f.layoutMode = spec.autoLayout.direction === "VERTICAL" ? "VERTICAL" : "HORIZONTAL";
-                                    f.itemSpacing = spec.autoLayout.spacing ?? 8;
-                                    f.paddingLeft = f.paddingRight = f.paddingTop = f.paddingBottom = spec.autoLayout.padding ?? 0;
-                                }
-
-                                // Attach to current page
-                                figma.currentPage.appendChild(inst);
-
-                                ok(`Created instance: ${inst.name}`);
-                            } catch (e) {
-                                err(`createInstance: ${String(e)}`);
-                            }
-                            break;
-                        }
-
-                        // ──────────────────────────── UNKNOWN / UNSUPPORTED ────────────────────────────
-                        default:
-                            err(`Unknown node type: ${t} — skipped (no fallback creation)`);
-                            break;
-                    }
-
-                    // shared property updates (for newly created or updated nodes)
-                    if (node && spec.name) node.name = spec.name;
-                    if (node && spec.size) node.resize(spec.size.w || node.width, spec.size.h || node.height);
-                    if (node && spec.absPos) { node.x = spec.absPos.x || 0; node.y = spec.absPos.y || 0; }
-
-                    // auto layout
-                    if (node && spec.autoLayout) {
-                        const f = node as FrameNode | ComponentNode;
-                        f.layoutMode = spec.autoLayout.direction === "VERTICAL" ? "VERTICAL" : "HORIZONTAL";
-                        f.itemSpacing = spec.autoLayout.spacing ?? 8;
-                        f.paddingLeft = f.paddingRight = f.paddingTop = f.paddingBottom = spec.autoLayout.padding ?? 0;
-                    }
-
-                    // solid fill (if explicitly given)
-                    if (node && spec.fill) {
-                        const { r, g, b, a } = hexToRgb01(spec.fill);
-                        (node as GeometryMixin).fills = [{ type: "SOLID", color: { r, g, b }, opacity: a }];
-                    }
-
-                    // recurse into children
-                    if (node && Array.isArray(spec.children)) {
-                        for (const child of spec.children) await createNode(child, node as BaseNode & ChildrenMixin);
-                    }
-
-                    // store references
-                    if (node && spec.id) nodeMap.set(spec.id, node);
-                    if (node && t === "COMPONENT" && spec.id) componentMap.set(spec.id, node as ComponentNode);
-
-                    if (node) ok(`Created or updated ${t}: ${spec.name || "(unnamed)"}`);
-                    return node;
-
+                    await safeLoadFont(node.fontName);
+                    node.characters = value;
+                    dbg(`📝 Updated text in ${node.name}: ${value}`);
                 } catch (e) {
-                    err(`createNode(${spec?.name || t}): ${String(e)}`);
-                    return null;
+                    warn(`⚠️ Could not update text in ${node.name}: ${e}`);
                 }
+                break;
             }
 
-            // ──────────────────────────── Main Loop ────────────────────────────
-            for (const spec of arr) {
-                // 🔒 Skip master components even if the JSON includes their ID
-                if (spec.id) {
-                    const nodeById = figma.getNodeById(spec.id);
-                    if (nodeById && nodeById.type === "COMPONENT" && !nodeById.mainComponent) {
-                        log(`⛔ Skipping main component for id ${spec.id}`);
-                        continue;
-                    }
-
-                    // ✅ Safe path for instances or frames
-                    if (nodeById && (nodeById.type === "INSTANCE" || nodeById.type === "FRAME")) {
-                        log(`Updating existing instance/frame by ID: ${nodeById.name}`);
-                        if (Array.isArray(spec.children)) {
-                            for (const c of spec.children) await createNode(c, nodeById);
-                        }
-                        continue;
-                    }
-                }
-
-                // Fallback by name if ID not found
-                const target = figma.currentPage.findOne(
-                    n => n.name === spec.name && (n.type === "INSTANCE" || n.type === "FRAME")
-                );
-                if (target) {
-                    log(`Updating existing node by name: ${target.name}`);
-                    if (Array.isArray(spec.children)) {
-                        for (const c of spec.children) await createNode(c, target);
-                    }
-                    continue;
-                }
-
-                await createNode(spec, figma.currentPage);
+            case 'visible': {
+                node.visible = Boolean(value);
+                dbg(`👁️ Visibility set to ${value} for ${node.name}`);
+                break;
             }
 
+            default:
+                dbg(`❔ Unhandled property: ${prop} = ${value} on ${node.name}`);
+        }
+    }
 
-            ok(`Created or updated ${nodeMap.size} nodes total`);
+
+// ---------------------------------------------------------------------------
+    // Instance Updater — Specialized for Figma Component Instances
+    // ---------------------------------------------------------------------------
+    async function updateInstance(instance: InstanceNode, nodeSpec) {
+        if (!instance || !nodeSpec) return;
+        dbg(`Updating instance: ${instance.name}`);
+
+        // Rename instance if needed
+        if (nodeSpec.name && instance.name !== nodeSpec.name) {
+            instance.name = nodeSpec.name;
+            dbg(`Renamed instance to ${instance.name}`);
         }
 
+        // Update children through overrides
+        if (nodeSpec.children && nodeSpec.children.length > 0) {
+            for (const childSpec of nodeSpec.children) {
+                const match = findNode(instance, childSpec.target);
+                if (!match) continue;
 
+                if (childSpec.props?.name && match.name !== childSpec.props.name) {
+                    match.name = childSpec.props.name;
+                    dbg(`Renamed child: ${match.name}`);
+                }
+
+                if (childSpec.props) {
+                    // Try applying props directly
+                    await applyProps(match, childSpec.props);
+
+                    // Fallback for nested ColorBox inside instances
+                    if (childSpec.props['ColorBox.fills.color']) {
+                        const color = childSpec.props['ColorBox.fills.color'];
+                        const colorBox = match.findOne(n => n.name === 'ColorBox') as RectangleNode | null;
+                        if (colorBox && 'fills' in colorBox) {
+                            const { r, g, b, a } = hexToRgb01(color);
+                            try {
+                                colorBox.fills = [{ type: 'SOLID', color: { r, g, b }, opacity: a }];
+                                dbg(`🎨 Forced color override for ColorBox in ${match.name}: ${color}`);
+                            } catch (err) {
+                                warn(`❌ Could not recolor ColorBox in ${match.name}: ${err}`);
+                            }
+                        } else {
+                            warn(`⚠️ No ColorBox found under ${match.name}`);
+                        }
+                    }
+                }
+
+            }
+        }
+
+        dbg(`Finished updating instance: ${instance.name}`);
+    }
+
+
+// ---------------------------------------------------------------------------
+// RETIE PAGE TO VARIABLES
+// ---------------------------------------------------------------------------
 
 // -------------------------------- Re-tie page to Variables --------------------------------
 async function retiePageToVariables() {
     if (!figma.variables) { log("Variables API unavailable"); return; }
 
-    // --- setup ---
-    // 1) collections (local only)
+    // --- gather variables ---
     const collections = await figma.variables.getLocalVariableCollectionsAsync();
-
-    // 2) variables: try local first, then per-collection fallback
-    let vars: Variable[] = await figma.variables.getLocalVariablesAsync();  // single declaration
+    let vars = await figma.variables.getLocalVariablesAsync();
     if (!Array.isArray(vars)) vars = [];
-    if (vars.length === 0) {
-        // fallback: gather variables from each local collection
-        for (const c of collections) {
-            try {
-                const got = await figma.variables.getVariablesInCollectionAsync(c.id);
-                if (Array.isArray(got) && got.length) vars.push(...got);
-            } catch (e) {
-                log(`retie: getVariablesInCollectionAsync failed for "${c.name}": ${String(e)}`);
-            }
-        }
-    }
 
-    log(`retie: found ${collections.length} collections, ${vars.length} variables`);
-
-    // quick exits to avoid doing work if truly empty
     if (!collections.length || !vars.length) {
-        ok("Re-tied 0 properties on this page");
+        ok("No variables found on this page.");
         return;
     }
 
-    // lookups (for binding)
-    const varById     = new Map(vars.map(v => [v.id, v]));
-
-    // indexes must exist here so both indexer + binder can see them
-    const colorIdx = new Map<string, { id:string; name:string }>();
-    const numIdx   = new Map<number, { id:string; name:string }>();
-    const strIdx   = new Map<string, { id:string; name:string }>();
-
-    // tolerant color key
+    // --- helper functions ---
     const round255 = (x: number) => Math.round((x ?? 1) * 255);
-    const keyRGBA  = (r:number,g:number,b:number,a:number) =>
-        `${round255(r)},${round255(g)},${round255(b)},${round255(a ?? 1)}`;
+    const keyRGBA = (r:number,g:number,b:number,a:number) => `${round255(r)},${round255(g)},${round255(b)},${round255(a ?? 1)}`;
 
-    // API compatibility: old vs new
     const getVal = (v: any, modeId: string) => {
         try {
             if (typeof v.getValueForMode === "function") return v.getValueForMode(modeId);
             if (typeof v.getValueForModeId === "function") return v.getValueForModeId(modeId);
-        } catch (_) { /* ignore */ }
-
-        // 🔧 fallback: read from valuesByMode object (some builds require this)
+        } catch (_) {}
         if (v.valuesByMode && typeof v.valuesByMode === "object") {
-            const val = v.valuesByMode[modeId];
+            const val = Object.values(v.valuesByMode)[0];
             if (val !== undefined) return val;
         }
-
         return undefined;
     };
 
-    // Index every variable for all modes in its collection
+    const sameColor = (a:number,b:number) => Math.abs(a - b) < 0.002; // small tolerance
+
+    // --- index colors ---
+    const colorIdx = new Map<string, { id:string; name:string }>();
     for (const v of vars) {
-        const col = collections.find(c => c.id === v.variableCollectionId);
-        if (!col) continue;
-        for (const m of col.modes) {
+        const coll = collections.find(c => c.id === v.variableCollectionId);
+        if (!coll) continue;
+        for (const m of coll.modes) {
             const val = getVal(v, m.modeId);
-            if (val == null) continue;
-            if (v.resolvedType === "COLOR" && typeof val === "object" && "r" in val) {
+            if (val && typeof val === "object" && "r" in val) {
                 const {r,g,b,a} = val as {r:number;g:number;b:number;a:number};
                 colorIdx.set(keyRGBA(r,g,b,a), {id:v.id, name:v.name});
-            } else if (v.resolvedType === "FLOAT") {
-                const n = Number(val);
-                if (Number.isFinite(n)) numIdx.set(n, {id:v.id, name:v.name});
-            } else if (v.resolvedType === "STRING") {
-                strIdx.set(String(val), {id:v.id, name:v.name});
             }
         }
     }
 
-    log(`indexed ${colorIdx.size} colors, ${numIdx.size} numbers, ${strIdx.size} strings`);
+    log(`Indexed ${colorIdx.size} color variables.`);
 
-    // --- walk nodes + bind ---
-    const solidRGBA = (p: SolidPaint) => {
-        const a = typeof p.opacity === "number" ? p.opacity : 1;
-        return {r:p.color.r, g:p.color.g, b:p.color.b, a};
-    };
+    // --- walk page nodes ---
     const nodes = figma.currentPage.findAll();
     let bound = 0;
+    const boundNames: string[] = [];
 
     function bindPaintColor(node: any, prop: "fills" | "strokes", varId: string) {
-        const variable = varById.get(varId);
-        if (!variable) { log(`WARN paint: missing var ${varId}`); return false; }
-
         const paints = node[prop] as ReadonlyArray<Paint>;
-        if (!Array.isArray(paints) || paints.length === 0) return false;
-
-        const p0 = paints[0];
-        if (p0.type !== "SOLID") return false;
-
-        // clone paint without spread
-        const newPaint: SolidPaint = Object.assign({}, p0) as SolidPaint;
-
-        // keep existing boundVariables (if any) without spread
-        const existingBV: any = (p0 as any).boundVariables || {};
-        const nextBV: any = Object.assign({}, existingBV, {
-            // ✅ REQUIRED SHAPE
-            color: { type: "VARIABLE_ALIAS", id: variable.id }
-        });
-
-        (newPaint as any).boundVariables = nextBV;
-
-        // write back paints (replace index 0) without spread
-        const next = paints.slice();
-        next[0] = newPaint;
-
-        try {
-            (node as any)[prop] = next;
-            return true;
-        } catch (e) {
-            log(`bind ${prop} color failed: ${String(e)}`);
-            return false;
-        }
+        if (!paints?.length || paints[0].type !== "SOLID") return false;
+        const newPaint = Object.assign({}, paints[0]);
+        (newPaint as any).boundVariables = { color: { type: "VARIABLE_ALIAS", id: varId } };
+        node[prop] = [newPaint];
+        return true;
     }
 
-    const bind = (node:any, prop:string, varId:string) => {
-        const variable = varById.get(varId);
-        if (!variable) return;
-        try { node.setBoundVariable(prop, variable); bound++; }
-        catch(e){ log(`bind ${prop} failed: ${String(e)}`); }
-    };
+    const solidRGBA = (p: SolidPaint) => ({
+        r: p.color.r,
+        g: p.color.g,
+        b: p.color.b,
+        a: typeof p.opacity === "number" ? p.opacity : 1
+    });
 
     for (const node of nodes) {
-        // fills
-        if ("fills" in node) {
-            const fs = (node as GeometryMixin).fills;
-            if (Array.isArray(fs) && fs.length && fs[0].type === "SOLID") {   // ← changed
-                const { r,g,b,a } = solidRGBA(fs[0] as SolidPaint);
-                const m = colorIdx.get(keyRGBA(r,g,b,a));
-                if (m && bindPaintColor(node, "fills", m.id)) { bound++; log(`bind fills → ${m.name}`); }
-            }
-        }
+        if ("fills" in node && Array.isArray(node.fills) && node.fills[0]?.type === "SOLID") {
+            const { r,g,b,a } = solidRGBA(node.fills[0] as SolidPaint);
+            let match = colorIdx.get(keyRGBA(r,g,b,a));
 
-        // strokes
-        if ("strokes" in node) {
-            const st = (node as GeometryMixin).strokes;
-            if (Array.isArray(st) && st.length && st[0].type === "SOLID") {   // ← changed
-                const { r,g,b,a } = solidRGBA(st[0] as SolidPaint);
-                const m = colorIdx.get(keyRGBA(r,g,b,a));
-                if (m && bindPaintColor(node, "strokes", m.id)) { bound++; log(`bind strokes → ${m.name}`); }
+            // fallback: if no exact match, allow tiny tolerance match
+            if (!match) {
+                for (const [k,v] of colorIdx.entries()) {
+                    const [R,G,B] = k.split(",").map(n=>Number(n)/255);
+                    if (sameColor(R,r) && sameColor(G,g) && sameColor(B,b)) {
+                        match = v; break;
+                    }
+                }
             }
-        }
 
-        // text
-        if (node.type === "TEXT") {
-            const t = node as TextNode;
-            if (typeof t.fontSize === "number") {
-                const m = numIdx.get(t.fontSize); if (m) { bind(t, "fontSize", m.id); log(`bind fontSize → ${m.name}`); }
-            }
-            const lh: any = t.lineHeight;
-            if (lh && typeof lh === "object" && lh.unit === "PIXELS" && typeof lh.value === "number") {
-                const m = numIdx.get(lh.value); if (m) { bind(t, "lineHeight", m.id); log(`bind lineHeight → ${m.name}`); }
-            }
-            const tf = t.fills as ReadonlyArray<Paint>;
-            if (Array.isArray(t.fills) && t.fills.length && t.fills[0].type === "SOLID") {
-                const { r,g,b,a } = solidRGBA(t.fills[0] as SolidPaint);
-                const m = colorIdx.get(keyRGBA(r,g,b,a));
-                if (m && bindPaintColor(t, "fills", m.id)) { bound++; log(`bind text fill → ${m.name}`); }
-            }
-        }
-        // layout numerics
-        const n:any = node;
-        const numericProps = ["itemSpacing","paddingLeft","paddingRight","paddingTop","paddingBottom","cornerRadius","strokeWeight"];
-        for (const prop of numericProps) {
-            if (typeof n[prop] === "number") {
-                const m = numIdx.get(n[prop]); if (m) { bind(node, prop, m.id); log(`bind ${prop} → ${m.name}`); }
+            if (match && bindPaintColor(node, "fills", match.id)) {
+                bound++;
+                boundNames.push(match.name);
             }
         }
     }
 
-    ok(`Re-tied ${bound} properties on this page`);
+    ok(`🔄 Re-tied ${bound} node${bound===1?"":"s"} to variables${bound>0?":":""} ${boundNames.join(", ")}`);
 }
 
-
-
-
-
-// ready
-
-log("YY Make Changes ready");
-figma.notify("YY Make Changes plugin ready");

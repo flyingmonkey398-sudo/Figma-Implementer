@@ -1,0 +1,109 @@
+{
+  "$schema": "yy://scan.schema.v0",
+  "meta": {
+    "fileName": "web.virtualg.design",
+    "pageName": "style_guide",
+    "insertPath": "Color System/Content Frame/Token Wrapper Frame/Color Main"
+  },
+  "nodes": [
+    {
+      "name": "Error Palette Instance",
+      "type": "INSTANCE",
+      "masterComponent": "palette",
+      "children": [
+        { "target": "PRIMARY", "props": { "characters": "ERROR" } },
+        { "target": "Accent Palette", "props": { "name": "Error Palette" } },
+
+        { "target": "Accent 25", "props": { "name": "Error 25" } },
+        { "target": "Accent 50", "props": { "name": "Error 50" } },
+        { "target": "Accent 100", "props": { "name": "Error 100" } },
+        { "target": "Accent 200", "props": { "name": "Error 200" } },
+        { "target": "Accent 300", "props": { "name": "Error 300" } },
+        { "target": "Accent 400", "props": { "name": "Error 400" } },
+        { "target": "Accent 500", "props": { "name": "Error 500" } },
+        { "target": "Accent 600", "props": { "name": "Error 600" } },
+        { "target": "Accent 700", "props": { "name": "Error 700" } },
+        { "target": "Accent 800", "props": { "name": "Error 800" } },
+        { "target": "Accent 900", "props": { "name": "Error 900" } },
+
+        { "target": "Error 25", "props": { "ColorBox.fills.color": "#FFFBFA", "Label.characters": "25", "Hex.characters": "#FFFBFA" } },
+        { "target": "Error 50", "props": { "ColorBox.fills.color": "#FEF3F2", "Label.characters": "50", "Hex.characters": "#FEF3F2" } },
+        { "target": "Error 100", "props": { "ColorBox.fills.color": "#FEE4E2", "Label.characters": "100", "Hex.characters": "#FEE4E2" } },
+        { "target": "Error 200", "props": { "ColorBox.fills.color": "#FECDCA", "Label.characters": "200", "Hex.characters": "#FECDCA" } },
+        { "target": "Error 300", "props": { "ColorBox.fills.color": "#FDA29B", "Label.characters": "300", "Hex.characters": "#FDA29B" } },
+        { "target": "Error 400", "props": { "ColorBox.fills.color": "#F97066", "Label.characters": "400", "Hex.characters": "#F97066" } },
+        { "target": "Error 500", "props": { "ColorBox.fills.color": "#F04438", "Label.characters": "500", "Hex.characters": "#F04438" } },
+        { "target": "Error 600", "props": { "ColorBox.fills.color": "#D92D20", "Label.characters": "600", "Hex.characters": "#D92D20" } },
+        { "target": "Error 700", "props": { "ColorBox.fills.color": "#B42318", "Label.characters": "700", "Hex.characters": "#B42318" } },
+        { "target": "Error 800", "props": { "ColorBox.fills.color": "#912018", "Label.characters": "800", "Hex.characters": "#912018" } },
+        { "target": "Error 900", "props": { "ColorBox.fills.color": "#7A271A", "Label.characters": "900", "Hex.characters": "#7A271A" } }
+      ]
+    },
+    {
+      "name": "Warning Palette Instance",
+      "type": "INSTANCE",
+      "masterComponent": "palette",
+      "children": [
+        { "target": "PRIMARY", "props": { "characters": "WARNING" } },
+        { "target": "Accent Palette", "props": { "name": "Warning Palette" } },
+
+        { "target": "Accent 25", "props": { "name": "Warning 25" } },
+        { "target": "Accent 50", "props": { "name": "Warning 50" } },
+        { "target": "Accent 100", "props": { "name": "Warning 100" } },
+        { "target": "Accent 200", "props": { "name": "Warning 200" } },
+        { "target": "Accent 300", "props": { "name": "Warning 300" } },
+        { "target": "Accent 400", "props": { "name": "Warning 400" } },
+        { "target": "Accent 500", "props": { "name": "Warning 500" } },
+        { "target": "Accent 600", "props": { "name": "Warning 600" } },
+        { "target": "Accent 700", "props": { "name": "Warning 700" } },
+        { "target": "Accent 800", "props": { "name": "Warning 800" } },
+        { "target": "Accent 900", "props": { "name": "Warning 900" } },
+
+        { "target": "Warning 25", "props": { "ColorBox.fills.color": "#FFFCF5", "Label.characters": "25", "Hex.characters": "#FFFCF5" } },
+        { "target": "Warning 50", "props": { "ColorBox.fills.color": "#FFFAEB", "Label.characters": "50", "Hex.characters": "#FFFAEB" } },
+        { "target": "Warning 100", "props": { "ColorBox.fills.color": "#FEF0C7", "Label.characters": "100", "Hex.characters": "#FEF0C7" } },
+        { "target": "Warning 200", "props": { "ColorBox.fills.color": "#FEDF89", "Label.characters": "200", "Hex.characters": "#FEDF89" } },
+        { "target": "Warning 300", "props": { "ColorBox.fills.color": "#FEC84B", "Label.characters": "300", "Hex.characters": "#FEC84B" } },
+        { "target": "Warning 400", "props": { "ColorBox.fills.color": "#FDB022", "Label.characters": "400", "Hex.characters": "#FDB022" } },
+        { "target": "Warning 500", "props": { "ColorBox.fills.color": "#F79009", "Label.characters": "500", "Hex.characters": "#F79009" } },
+        { "target": "Warning 600", "props": { "ColorBox.fills.color": "#DC6803", "Label.characters": "600", "Hex.characters": "#DC6803" } },
+        { "target": "Warning 700", "props": { "ColorBox.fills.color": "#B54708", "Label.characters": "700", "Hex.characters": "#B54708" } },
+        { "target": "Warning 800", "props": { "ColorBox.fills.color": "#93370D", "Label.characters": "800", "Hex.characters": "#93370D" } },
+        { "target": "Warning 900", "props": { "ColorBox.fills.color": "#7A2E0E", "Label.characters": "900", "Hex.characters": "#7A2E0E" } }
+      ]
+    },
+    {
+      "name": "Success Palette Instance",
+      "type": "INSTANCE",
+      "masterComponent": "palette",
+      "children": [
+        { "target": "PRIMARY", "props": { "characters": "SUCCESS" } },
+        { "target": "Accent Palette", "props": { "name": "Success Palette" } },
+
+        { "target": "Accent 25", "props": { "name": "Success 25" } },
+        { "target": "Accent 50", "props": { "name": "Success 50" } },
+        { "target": "Accent 100", "props": { "name": "Success 100" } },
+        { "target": "Accent 200", "props": { "name": "Success 200" } },
+        { "target": "Accent 300", "props": { "name": "Success 300" } },
+        { "target": "Accent 400", "props": { "name": "Success 400" } },
+        { "target": "Accent 500", "props": { "name": "Success 500" } },
+        { "target": "Accent 600", "props": { "name": "Success 600" } },
+        { "target": "Accent 700", "props": { "name": "Success 700" } },
+        { "target": "Accent 800", "props": { "name": "Success 800" } },
+        { "target": "Accent 900", "props": { "name": "Success 900" } },
+
+        { "target": "Success 25", "props": { "ColorBox.fills.color": "#F6FEF9", "Label.characters": "25", "Hex.characters": "#F6FEF9" } },
+        { "target": "Success 50", "props": { "ColorBox.fills.color": "#ECFDF3", "Label.characters": "50", "Hex.characters": "#ECFDF3" } },
+        { "target": "Success 100", "props": { "ColorBox.fills.color": "#D1FADF", "Label.characters": "100", "Hex.characters": "#D1FADF" } },
+        { "target": "Success 200", "props": { "ColorBox.fills.color": "#A6F4C5", "Label.characters": "200", "Hex.characters": "#A6F4C5" } },
+        { "target": "Success 300", "props": { "ColorBox.fills.color": "#6CE9A6", "Label.characters": "300", "Hex.characters": "#6CE9A6" } },
+        { "target": "Success 400", "props": { "ColorBox.fills.color": "#32D583", "Label.characters": "400", "Hex.characters": "#32D583" } },
+        { "target": "Success 500", "props": { "ColorBox.fills.color": "#12B76A", "Label.characters": "500", "Hex.characters": "#12B76A" } },
+        { "target": "Success 600", "props": { "ColorBox.fills.color": "#039855", "Label.characters": "600", "Hex.characters": "#039855" } },
+        { "target": "Success 700", "props": { "ColorBox.fills.color": "#027A48", "Label.characters": "700", "Hex.characters": "#027A48" } },
+        { "target": "Success 800", "props": { "ColorBox.fills.color": "#05603A", "Label.characters": "800", "Hex.characters": "#05603A" } },
+        { "target": "Success 900", "props": { "ColorBox.fills.color": "#054F31", "Label.characters": "900", "Hex.characters": "#054F31" } }
+      ]
+    }
+  ]
+}
