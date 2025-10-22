@@ -1,5 +1,5 @@
 {
   "scripts": {
-    "dev": "esbuild main-implement.ts --outfile=main-implement.js --format=cjs --platform=browser --target=es2018"
+    "b": "esbuild main-implement.ts --outfile=main-implement.js --format=iife --platform=browser --target=es2018"
   }
 }
