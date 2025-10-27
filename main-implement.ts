@@ -66,6 +66,14 @@ async function insertPath(pathString: string): Promise<FrameNode | null> {
 }
 
 // ---------------------------------------------------------------------------
+// Helper for spec type
+// ---------------------------------------------------------------------------
+function normalizeVarType(t: any): VariableResolvedDataType {
+    const up = String(t || "STRING").toUpperCase();
+    if (up === "COLOR" || up === "FLOAT" || up === "STRING" || up === "BOOLEAN") return up as any;
+    return "STRING";
+}
+// ---------------------------------------------------------------------------
 // Helper: Hex → RGB(A)
 // ---------------------------------------------------------------------------
 function hexToRgb01(hex: string) {
@@ -140,31 +148,38 @@ function hexToRgb01(hex: string) {
 // Universal JSON Handler (with Debug Logs)
 // ---------------------------------------------------------------------------
 async function handleUniversalJSON(spec: any) {
+    // CHANGED: don’t fail when nodes are missing; just ensure it exists to silence warnings
+    if (!spec.nodes) spec.nodes = [];
+
+    // CHANGED: use plugin UI logger + support both schema shapes
+    log("🧠 Incoming JSON keys:", Object.keys(spec));
+    const collectionsInSpec =
+        (spec && spec.variables && spec.variables.collections) ||
+        (spec && spec.collections) ||
+        [];
+
+    log("📚 Detected collections:", collectionsInSpec.length);
+
     try {
-        if (spec?.meta?.insertPath) {
-            const targetParent = await insertPath(spec.meta.insertPath);
-            if (targetParent) {
-                dbg(`✅ Insert path resolved: ${spec.meta.insertPath}`);
-                // Set this as the default parent for new nodes
-                defaultParent = targetParent;
-            }
-        }
-        if (spec?.variables?.collections) {
+        // CHANGED: import variable collections if present (works for both shapes)
+        if (collectionsInSpec.length > 0) {
             try {
                 const collections = await figma.variables.getLocalVariableCollectionsAsync();
                 const vars = await figma.variables.getLocalVariablesAsync();
 
-                for (const collSpec of spec.variables.collections) {
+                for (const collSpec of collectionsInSpec) {
                     // find or create collection
                     let coll = collections.find(c => c.name === collSpec.name);
                     if (!coll) {
                         coll = figma.variables.createVariableCollection(collSpec.name);
                         log(`🆕 Created collection: ${collSpec.name}`);
+                    } else {
+                        log(`🔁 Using existing collection: ${collSpec.name}`);
                     }
 
-                    // ensure modes
+                    // ensure modes (default to Value when omitted)
                     const existingModeNames = new Set(coll.modes.map(m => m.name));
-                    for (const modeSpec of collSpec.modes || [{ name: "Value" }]) {
+                    for (const modeSpec of (collSpec.modes || [{ name: "Value" }])) {
                         if (!existingModeNames.has(modeSpec.name)) {
                             coll.addMode(modeSpec.name);
                             log(`➕ Added mode: ${modeSpec.name}`);
@@ -172,24 +187,42 @@ async function handleUniversalJSON(spec: any) {
                     }
 
                     // create or update variables
-                    for (const vSpec of collSpec.variables || []) {
+                    for (const vSpec of (collSpec.variables || [])) {
+                        const type = normalizeVarType(vSpec.type || vSpec.resolvedType);
                         let v = vars.find(x => x.name === vSpec.name && x.variableCollectionId === coll.id);
                         if (!v) {
-                            v = figma.variables.createVariable(vSpec.name, coll.id, vSpec.type);
-                            log(`🎨 Created variable: ${vSpec.name}`);
+                            const safeName = vSpec.name.replace(/[^a-zA-Z0-9_ ]/g, "_");
+                            v = figma.variables.createVariable(safeName, coll.id, type as VariableResolvedDataType);
+                            log(`🎨 Created variable: ${vSpec.name} → ${safeName}`);
+                            log(`🎨 Created variable: ${vSpec.name} [${type}]`);
+                        } else {
+                            log(`🔁 Updated variable: ${vSpec.name} [${type}]`);
                         }
 
+                        // apply values per mode
                         for (const [modeKey, val] of Object.entries(vSpec.valuesByMode || {})) {
                             const mode = coll.modes.find(m => m.name === modeKey || m.modeId === modeKey);
-                            if (!mode) continue;
+                            if (!mode) {
+                                warn(`  ⚠️ Mode "${modeKey}" not found in collection "${coll.name}"`);
+                                continue;
+                            }
 
-                            if (vSpec.type === "COLOR") {
-                                const color = typeof val === "string" ? hexToRgb01(val) : val;
-                                v.setValueForMode(mode.modeId, color);
-                            } else if (vSpec.type === "FLOAT") {
-                                v.setValueForMode(mode.modeId, Number(val));
-                            } else if (vSpec.type === "STRING") {
-                                v.setValueForMode(mode.modeId, String(val));
+                            try {
+                                if (type === "COLOR") {
+                                    const color = typeof val === "string" ? hexToRgb01(val) : val;
+                                    v.setValueForMode(mode.modeId, color);
+                                } else if (type === "FLOAT") {
+                                    v.setValueForMode(mode.modeId, Number(val));
+                                } else if (type === "STRING") {
+                                    v.setValueForMode(mode.modeId, String(val));
+                                } else if (type === "BOOLEAN") {
+                                    v.setValueForMode(mode.modeId, Boolean(val));
+                                } else {
+                                    warn(`  ⚠️ Unsupported type "${type}" on ${vSpec.name}. Skipped value.`);
+                                }
+                                log(`  🎯 ${vSpec.name} @ ${mode.name} ← ${JSON.stringify(val)}`);
+                            } catch (e) {
+                                warn(`  ❌ Failed setting ${vSpec.name} @ ${mode.name}: ${e}`);
                             }
                         }
                     }
@@ -200,18 +233,21 @@ async function handleUniversalJSON(spec: any) {
                 warn(`⚠️ Failed to apply variables: ${e}`);
             }
         }
-        if (!spec?.nodes || spec.nodes.length === 0) {
-            warn("⚠️ No nodes found in JSON.");
-            return;
-        }
 
-        for (const nodeDef of spec.nodes) {
-            if (nodeDef.type === "INSTANCE") {
-                const instance = await findOrCreateInstance(nodeDef);
-                if (instance) await updateInstance(instance, nodeDef);
-            } else {
-                await buildNode(nodeDef);
+        // CHANGED: do NOT return early; variables-only imports should still succeed
+        if (!spec.nodes || spec.nodes.length === 0) {
+            warn("⚠️ No nodes found in JSON. (This is fine for variables-only imports.)");
+        } else {
+            // existing node handling — unchanged
+            for (const nodeDef of spec.nodes) {
+                if (nodeDef.type === "INSTANCE") {
+                    const instance = await findOrCreateInstance(nodeDef);
+                    if (instance) await updateInstance(instance, nodeDef);
+                } else {
+                    await buildNode(nodeDef);
+                }
             }
+            ok("✅ Nodes applied successfully.");
         }
 
         ok("✅ JSON applied successfully.");
@@ -311,28 +347,100 @@ figma.ui.onmessage = async (msg) => {
         return '33:0';
     }
 
-    async function registerVariableCollection(collection: any, spec: any) {
-        const modeId = detectModeId(spec);
-        const colName = collection.name || 'Unnamed Collection';
-        const variables = collection.variables || [];
-        log(`🧭 Using mode ID: ${modeId} for collection: ${colName}`);
+async function registerVariableCollection(collection: any, spec: any): Promise<void> {
+    try {
+        if (!collection) {
+            console.error("❌ No collection object provided:", collection);
+            return;
+        }
 
+        const colName = collection.name || "Unnamed Collection";
+        const variables = collection.variables || [];
+        console.log(`\n🧩 Starting collection import: "${colName}"`);
+        console.log("📦 Variables count:", variables.length);
+        console.log("📜 Modes:", (collection.modes || []).map((m: any) => m.name));
+
+        // 1️⃣ Create or find Figma collection
+        let coll = figma.variables.getLocalVariableCollections().find(c => c.name === colName);
+
+        if (!coll) {
+            coll = figma.variables.createVariableCollection(colName);
+            log(`🆕 Created collection: ${colName} (id=${coll.id})`);
+
+            // 🧹 Remove the default "Mode 1" *before doing anything else*
+            // ⚠️ Must reload modes to ensure it's recognized
+            await figma.loadAllVariableCollectionsAsync?.();
+            const defaultMode = coll.modes.find(m => m.name === "Mode 1");
+            if (defaultMode) {
+                coll.removeMode(defaultMode.modeId);
+                log("🧽 Removed default mode: Mode 1");
+            }
+
+            // 🏷️ Immediately add your intended modes
+            for (const modeSpec of collection.modes || [{ name: "Value" }]) {
+                if (!coll.modes.some(m => m.name === modeSpec.name)) {
+                    coll.addMode(modeSpec.name);
+                    log(`➕ Added mode: ${modeSpec.name}`);
+                }
+            }
+
+        } else {
+            log(`🔁 Using existing collection: ${colName} (id=${coll.id})`);
+        }
+
+
+        // 2️⃣ Ensure desired modes exist
+                for (const modeSpec of collection.modes || [{ name: "Value" }]) {
+                    if (!coll.modes.some(m => m.name === modeSpec.name)) {
+                        coll.addMode(modeSpec.name);
+                        log(`➕ Added mode: ${modeSpec.name}`);
+                    }
+                }
+
+
+        // 3️⃣ Check type + create variables
         for (const variable of variables) {
             const name = variable.name;
-            const type = variable.type || 'STRING';
-            const value = variable.valuesByMode?.[modeId];
-            if (!name) continue;
+            const type = variable.type || variable.resolvedType || "STRING";
+            if (!name) {
+                console.warn("⚠️ Skipping unnamed variable entry:", variable);
+                continue;
+            }
 
             try {
-                let v = figma.variables.getLocalVariableById(variable.id);
-                if (!v) v = figma.variables.createVariable(name, modeId, type);
-                v.valuesByMode = { [modeId]: value };
+                let v = figma.variables.getLocalVariables().find(v => v.name === name);
+                if (!v) {
+                    v = figma.variables.createVariable(name, coll.id, type as VariableResolvedDataType);
+                    console.log(`✅ Created variable: ${name} [${type}]`);
+                } else {
+                    console.log(`🔁 Updated existing variable: ${name}`);
+                }
+
+                // 4️⃣ Assign values by mode
+                for (const mode of coll.modes) {
+                    const modeName = mode.name;
+                    const value = variable.valuesByMode?.[modeName];
+                    if (value !== undefined) {
+                        try {
+                            v.setValueForMode(mode.modeId, value);
+                            console.log(`  🎨 Set value for ${modeName}:`, value);
+                        } catch (err) {
+                            console.error(`  ❌ Failed to set value for ${modeName}:`, err);
+                        }
+                    } else {
+                        console.warn(`  ⚠️ No value found for mode "${modeName}" in ${name}`);
+                    }
+                }
             } catch (e) {
-                warn(`Skipped variable "${name}": ${e}`);
+                console.error(`❌ Failed to create variable "${name}":`, e);
             }
         }
-        log(`🎨 Registered variable collection: ${colName}`);
+
+        console.log(`✅ Finished processing collection "${colName}"\n`);
+    } catch (err) {
+        console.error("💥 registerVariableCollection() crashed:", err);
     }
+}
 
 
     // ---------------------------------------------------------------------------

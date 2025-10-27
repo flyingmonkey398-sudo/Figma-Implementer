@@ -30,23 +30,10 @@
     uiLog(`\u2705 ${msg}`);
   };
   let defaultParent = null;
-  async function insertPath(pathString) {
-    const segments = pathString.split("/").map((s) => s.trim()).filter(Boolean);
-    let parent = figma.currentPage;
-    for (const segment of segments) {
-      let existing = parent.findOne((n) => n.name === segment && "children" in n);
-      if (!existing) {
-        const frame = figma.createFrame();
-        frame.name = segment;
-        parent.appendChild(frame);
-        dbg(`\u{1F4E6} Created new frame in path: ${segment}`);
-        parent = frame;
-      } else {
-        parent = existing;
-        dbg(`\u21AA Found existing path segment: ${segment}`);
-      }
-    }
-    return parent;
+  function normalizeVarType(t) {
+    const up = String(t || "STRING").toUpperCase();
+    if (up === "COLOR" || up === "FLOAT" || up === "STRING" || up === "BOOLEAN") return up;
+    return "STRING";
   }
   function hexToRgb01(hex) {
     let c = hex.replace("#", "").trim();
@@ -87,24 +74,22 @@
     return { r, g, b, a: 1 };
   }
   async function handleUniversalJSON(spec) {
-    var _a, _b;
+    if (!spec.nodes) spec.nodes = [];
+    log("\u{1F9E0} Incoming JSON keys:", Object.keys(spec));
+    const collectionsInSpec = spec && spec.variables && spec.variables.collections || spec && spec.collections || [];
+    log("\u{1F4DA} Detected collections:", collectionsInSpec.length);
     try {
-      if ((_a = spec == null ? void 0 : spec.meta) == null ? void 0 : _a.insertPath) {
-        const targetParent = await insertPath(spec.meta.insertPath);
-        if (targetParent) {
-          dbg(`\u2705 Insert path resolved: ${spec.meta.insertPath}`);
-          defaultParent = targetParent;
-        }
-      }
-      if ((_b = spec == null ? void 0 : spec.variables) == null ? void 0 : _b.collections) {
+      if (collectionsInSpec.length > 0) {
         try {
           const collections = await figma.variables.getLocalVariableCollectionsAsync();
           const vars = await figma.variables.getLocalVariablesAsync();
-          for (const collSpec of spec.variables.collections) {
+          for (const collSpec of collectionsInSpec) {
             let coll = collections.find((c) => c.name === collSpec.name);
             if (!coll) {
               coll = figma.variables.createVariableCollection(collSpec.name);
               log(`\u{1F195} Created collection: ${collSpec.name}`);
+            } else {
+              log(`\u{1F501} Using existing collection: ${collSpec.name}`);
             }
             const existingModeNames = new Set(coll.modes.map((m) => m.name));
             for (const modeSpec of collSpec.modes || [{ name: "Value" }]) {
@@ -114,21 +99,38 @@
               }
             }
             for (const vSpec of collSpec.variables || []) {
+              const type = normalizeVarType(vSpec.type || vSpec.resolvedType);
               let v = vars.find((x) => x.name === vSpec.name && x.variableCollectionId === coll.id);
               if (!v) {
-                v = figma.variables.createVariable(vSpec.name, coll.id, vSpec.type);
-                log(`\u{1F3A8} Created variable: ${vSpec.name}`);
+                const safeName = vSpec.name.replace(/[^a-zA-Z0-9_ ]/g, "_");
+                v = figma.variables.createVariable(safeName, coll.id, type);
+                log(`\u{1F3A8} Created variable: ${vSpec.name} \u2192 ${safeName}`);
+                log(`\u{1F3A8} Created variable: ${vSpec.name} [${type}]`);
+              } else {
+                log(`\u{1F501} Updated variable: ${vSpec.name} [${type}]`);
               }
               for (const [modeKey, val] of Object.entries(vSpec.valuesByMode || {})) {
                 const mode = coll.modes.find((m) => m.name === modeKey || m.modeId === modeKey);
-                if (!mode) continue;
-                if (vSpec.type === "COLOR") {
-                  const color = typeof val === "string" ? hexToRgb01(val) : val;
-                  v.setValueForMode(mode.modeId, color);
-                } else if (vSpec.type === "FLOAT") {
-                  v.setValueForMode(mode.modeId, Number(val));
-                } else if (vSpec.type === "STRING") {
-                  v.setValueForMode(mode.modeId, String(val));
+                if (!mode) {
+                  warn(`  \u26A0\uFE0F Mode "${modeKey}" not found in collection "${coll.name}"`);
+                  continue;
+                }
+                try {
+                  if (type === "COLOR") {
+                    const color = typeof val === "string" ? hexToRgb01(val) : val;
+                    v.setValueForMode(mode.modeId, color);
+                  } else if (type === "FLOAT") {
+                    v.setValueForMode(mode.modeId, Number(val));
+                  } else if (type === "STRING") {
+                    v.setValueForMode(mode.modeId, String(val));
+                  } else if (type === "BOOLEAN") {
+                    v.setValueForMode(mode.modeId, Boolean(val));
+                  } else {
+                    warn(`  \u26A0\uFE0F Unsupported type "${type}" on ${vSpec.name}. Skipped value.`);
+                  }
+                  log(`  \u{1F3AF} ${vSpec.name} @ ${mode.name} \u2190 ${JSON.stringify(val)}`);
+                } catch (e) {
+                  warn(`  \u274C Failed setting ${vSpec.name} @ ${mode.name}: ${e}`);
                 }
               }
             }
@@ -138,17 +140,18 @@
           warn(`\u26A0\uFE0F Failed to apply variables: ${e}`);
         }
       }
-      if (!(spec == null ? void 0 : spec.nodes) || spec.nodes.length === 0) {
-        warn("\u26A0\uFE0F No nodes found in JSON.");
-        return;
-      }
-      for (const nodeDef of spec.nodes) {
-        if (nodeDef.type === "INSTANCE") {
-          const instance = await findOrCreateInstance(nodeDef);
-          if (instance) await updateInstance(instance, nodeDef);
-        } else {
-          await buildNode(nodeDef);
+      if (!spec.nodes || spec.nodes.length === 0) {
+        warn("\u26A0\uFE0F No nodes found in JSON. (This is fine for variables-only imports.)");
+      } else {
+        for (const nodeDef of spec.nodes) {
+          if (nodeDef.type === "INSTANCE") {
+            const instance = await findOrCreateInstance(nodeDef);
+            if (instance) await updateInstance(instance, nodeDef);
+          } else {
+            await buildNode(nodeDef);
+          }
         }
+        ok("\u2705 Nodes applied successfully.");
       }
       ok("\u2705 JSON applied successfully.");
     } catch (e) {
